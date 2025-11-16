@@ -1,0 +1,17 @@
+# configs/pins.yaml
+external:
+  rl-starter-files:
+    repo: https://github.com/lcswillems/rl-starter-files
+    commit: 317da04a9a6fb26506bbd7f6c7c7e10fc0de86e0
+  pytorch-a2c-ppo-acktr-gail:
+    repo: https://github.com/ikostrikov/pytorch-a2c-ppo-acktr-gail
+    commit: 41332b78dfb50321c29bade65f9d244387f68a60
+  idaac:
+    repo: https://github.com/rraileanu/idaac
+    commit: 2fe30202942898b1b09d76e5d8c71d5a7db3686b
+  impact-driven-exploration:
+    repo: https://github.com/facebookresearch/impact-driven-exploration
+    commit: 877c4ea530cc0ca3902211dba4e922bf8c3ce276
+  RE3:
+    repo: https://github.com/younggyoseo/RE3
+    commit: 66cc4d16b81989b3ebfdbbfb0356612ee77a7670
