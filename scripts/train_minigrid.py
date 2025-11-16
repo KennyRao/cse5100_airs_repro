@@ -1,12 +1,13 @@
-# scripts/train_minigrid.py
 import argparse
-from dataclasses import dataclass
-from typing import Tuple, List
+import os
+from dataclasses import dataclass, asdict
+from typing import Tuple, List, Optional
 
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.distributions import Categorical
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 import gymnasium as gym
@@ -45,6 +46,17 @@ class TrainConfig:
 
     seed: int = 1
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Logging / saving
+    log_dir: str = "runs"
+    results_dir: str = "results"
+    checkpoints_dir: str = "checkpoints"
+    exp_name: str = "default"
+    log_interval_updates: int = 10
+    save_interval_updates: int = 50
+
+    # Optional: path to resume from
+    load_path: Optional[str] = None
 
 
 def make_env(env_id: str, seed: int):
@@ -109,6 +121,24 @@ def compute_gae(
 def train(config: TrainConfig):
     device = torch.device(config.device)
 
+    # Pretty run name safe for paths
+    env_tag = config.env_id.replace("MiniGrid-", "").replace("-v0", "")
+    run_name = f"{env_tag}_{config.mode}_seed{config.seed}_{config.exp_name}"
+
+    # Make dirs
+    os.makedirs(config.log_dir, exist_ok=True)
+    os.makedirs(config.results_dir, exist_ok=True)
+    os.makedirs(config.checkpoints_dir, exist_ok=True)
+
+    # TensorBoard writer
+    tb_path = os.path.join(config.log_dir, run_name)
+    writer = SummaryWriter(log_dir=tb_path)
+
+    # CSV results file (for plotting later)
+    csv_path = os.path.join(config.results_dir, f"{run_name}.csv")
+    csv_fp = open(csv_path, "w", encoding="utf-8")
+    csv_fp.write("update,global_step,mean_return,policy_loss,value_loss,entropy,arm\n")
+
     # Vectorized env
     envs = gym.vector.SyncVectorEnv(
         [make_env(config.env_id, config.seed + i) for i in range(config.num_envs)]
@@ -135,12 +165,37 @@ def train(config: TrainConfig):
 
     # Bandit for AIRS
     if config.mode == "airs":
-        bandit = UCBIntrinsicBandit(arms=["id", "re3"], c=config.airs_c,
-                                    window=config.airs_window)
+        bandit = UCBIntrinsicBandit(
+            arms=["id", "re3"],
+            c=config.airs_c,
+            window=config.airs_window
+        )
     else:
         bandit = None
 
+    # Optional: load checkpoint
     global_step = 0
+    start_update = 0
+    if config.load_path is not None:
+        print(f"Loading checkpoint from {config.load_path}")
+        ckpt = torch.load(config.load_path, map_location=device)
+        ac_net.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        global_step = ckpt.get("global_step", 0)
+        start_update = ckpt.get("update", 0) + 1
+        # Restore bandit state for AIRS
+        if config.mode == "airs" and bandit is not None and "bandit_state" in ckpt:
+            bs = ckpt["bandit_state"]
+            bandit.total_updates = bs["total_updates"]
+            bandit.counts = bs["counts"]
+            # recent_returns: list of floats per arm
+            from collections import deque
+            bandit.recent_returns = {
+                arm: deque(vals, maxlen=config.airs_window)
+                for arm, vals in bs["recent_returns"].items()
+            }
+        print(f"Resumed at global_step={global_step}, update={start_update}")
+
     total_steps = config.total_timesteps
     num_updates = total_steps // (config.num_envs * config.num_steps)
 
@@ -153,13 +208,16 @@ def train(config: TrainConfig):
         beta0 = config.re3_beta0_empty  # fallback
 
     print(f"Training {config.mode} on {config.env_id} for {total_steps} steps")
+    print(f"Run name: {run_name}")
+    print(f"TensorBoard logdir: {tb_path}")
+    print(f"CSV path: {csv_path}")
 
     # Stats
     episode_returns: List[float] = []
     # For AIRS: count how often each arm is selected
     arm_counts = {"id": 0, "re3": 0}
 
-    for update in tqdm(range(num_updates)):
+    for update in tqdm(range(start_update, num_updates)):
         # Decide which intrinsic mode to use for this update
         if config.mode == "a2c":
             intrinsic_arm = "id"
@@ -208,17 +266,17 @@ def train(config: TrainConfig):
             next_obs, extrinsic_reward, terminated, truncated, infos = envs.step(
                 actions.cpu().numpy()
             )
-
             done = np.logical_or(terminated, truncated)
+            
             # Track episode returns from extrinsic rewards only
             for i, d in enumerate(done):
                 if d:
-                    # infos["final_info"] is a list; handle both classic gym vs gymnasium
                     final_info = infos.get("final_info")
                     if final_info is not None and final_info[i] is not None:
-                        ep_returns_this_update.append(final_info[i]["episode"]["r"])
+                        ep_returns_this_update.append(
+                            final_info[i]["episode"]["r"]
+                        )
                     else:
-                        # Fallback: sum extrinsic rewards (MiniGrid reward at end)
                         ep_returns_this_update.append(float(extrinsic_reward[i]))
 
             # Intrinsic reward
@@ -233,8 +291,7 @@ def train(config: TrainConfig):
                     )
 
             beta_t = beta_schedule(global_step, beta0, config.re3_kappa)
-            total_reward = torch.from_numpy(extrinsic_reward).to(device) + \
-                           beta_t * intrinsic
+            total_reward = torch.from_numpy(extrinsic_reward).to(device) + beta_t * intrinsic
 
             # Save to buffers
             obs_buf[t] = obs_torch
@@ -287,28 +344,87 @@ def train(config: TrainConfig):
         nn.utils.clip_grad_norm_(ac_net.parameters(), config.max_grad_norm)
         optimizer.step()
 
-        # Bandit update (AIRS only): use mean extrinsic episode return
-        if config.mode == "airs":
+        # Bandit update (AIRS only)
+        if config.mode == "airs" and bandit is not None:
             if len(ep_returns_this_update) > 0:
-                mean_ret = float(np.mean(ep_returns_this_update))
-                bandit.update(intrinsic_arm, mean_ret)
+                mean_ret_update = float(np.mean(ep_returns_this_update))
+                bandit.update(intrinsic_arm, mean_ret_update)
 
-        # Basic logging
+        # Aggregate stats
         if len(ep_returns_this_update) > 0:
             episode_returns.extend(ep_returns_this_update)
-            mean_return = np.mean(episode_returns[-50:])
+            mean_return = float(np.mean(episode_returns[-50:]))
         else:
             mean_return = float("nan")
 
-        if (update + 1) % 10 == 0:
+        # TensorBoard logging
+        if not np.isnan(mean_return):
+            writer.add_scalar(
+                "train/episode_return_mean50", mean_return, global_step
+            )
+        writer.add_scalar("loss/policy", policy_loss.item(), global_step)
+        writer.add_scalar("loss/value", value_loss.item(), global_step)
+        writer.add_scalar("loss/entropy", entropy.item(), global_step)
+        if config.mode == "airs":
+            # fraction of updates that picked RE3 so far
+            total_arm_picks = arm_counts["id"] + arm_counts["re3"]
+            if total_arm_picks > 0:
+                frac_re3 = arm_counts["re3"] / total_arm_picks
+                writer.add_scalar("airs/fraction_re3", frac_re3, global_step)
+
+        # CSV logging
+        csv_fp.write(
+            f"{update},{global_step},{mean_return},"
+            f"{policy_loss.item()},{value_loss.item()},{entropy.item()},"
+            f"{intrinsic_arm}\n"
+        )
+        csv_fp.flush()
+
+        # Console logging
+        if (update + 1) % config.log_interval_updates == 0:
             print(
                 f"Update {update+1}/{num_updates} | "
                 f"Mode {config.mode} | "
                 f"Mean episode return (last 50) = {mean_return:.3f}"
             )
 
+        # Save checkpoint
+        if ((update + 1) % config.save_interval_updates == 0) or \
+           (update + 1 == num_updates):
+            ckpt_path = os.path.join(
+                config.checkpoints_dir,
+                f"{run_name}_upd{update+1}.pt"
+            )
+            bandit_state = None
+            if config.mode == "airs" and bandit is not None:
+                bandit_state = {
+                    "total_updates": bandit.total_updates,
+                    "counts": bandit.counts,
+                    "recent_returns": {
+                        arm: list(deq)
+                        for arm, deq in bandit.recent_returns.items()
+                    },
+                }
+            ckpt = {
+                "model_state_dict": ac_net.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "config": asdict(config),
+                "global_step": global_step,
+                "update": update,
+                "env_id": config.env_id,
+                "mode": config.mode,
+                "bandit_state": bandit_state,
+                "run_name": run_name,
+            }
+            torch.save(ckpt, ckpt_path)
+            print(f"Saved checkpoint to {ckpt_path}")
+
     if config.mode == "airs":
         print("AIRS arm selection counts:", arm_counts)
+
+    csv_fp.close()
+    writer.close()
+    envs.close()
 
 
 def main():
@@ -327,10 +443,40 @@ def main():
         help="Which method to run",
     )
     parser.add_argument(
-        "--total_timesteps", type=int, default=200_000,
+        "--total_timesteps", type=int, default=1000_000,
         help="Total env steps across all envs"
     )
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--exp_name",
+        type=str,
+        default="default",
+        help="Extra tag to distinguish runs (e.g. date, comment).",
+    )
+    parser.add_argument(
+        "--log_dir",
+        type=str,
+        default="runs",
+        help="TensorBoard log directory root.",
+    )
+    parser.add_argument(
+        "--results_dir",
+        type=str,
+        default="results",
+        help="Directory to store CSV result files.",
+    )
+    parser.add_argument(
+        "--checkpoints_dir",
+        type=str,
+        default="checkpoints",
+        help="Directory to store model checkpoints.",
+    )
+    parser.add_argument(
+        "--load_path",
+        type=str,
+        default=None,
+        help="Optional path to a checkpoint .pt file to resume from.",
+    )
     args = parser.parse_args()
 
     cfg = TrainConfig(
@@ -338,6 +484,11 @@ def main():
         mode=args.mode,
         total_timesteps=args.total_timesteps,
         seed=args.seed,
+        exp_name=args.exp_name,
+        log_dir=args.log_dir,
+        results_dir=args.results_dir,
+        checkpoints_dir=args.checkpoints_dir,
+        load_path=args.load_path,
     )
     train(cfg)
 
