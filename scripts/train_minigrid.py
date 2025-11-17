@@ -1,3 +1,4 @@
+# scripts/train_minigrid.py
 import argparse
 import os
 from dataclasses import dataclass, asdict

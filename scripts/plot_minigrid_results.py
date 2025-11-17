@@ -1,3 +1,4 @@
+# scripts/plot_minigrid_results.py
 import argparse
 import os
 from typing import Dict, List
@@ -16,6 +17,52 @@ def load_run_csv(path: str) -> pd.DataFrame:
     return df
 
 
+def select_run_file(env_tag: str, mode: str, csv_root: str) -> str:
+    """
+    Pick the correct CSV file for a given env + mode,
+    based on the naming convention in train_minigrid.py:
+
+        run_name = f"{env_tag}_{mode}_seed{seed}_{exp_name}"
+
+    where exp_name is usually:
+      - 'baseline' for a2c
+      - 're3'      for a2c_re3
+      - 'airs'     for airs
+    """
+    # Map each mode to the expected exp_name suffix
+    exp_suffix_by_mode = {
+        "a2c": "baseline",
+        "a2c_re3": "re3",
+        "airs": "airs",
+    }
+
+    if mode not in exp_suffix_by_mode:
+        raise ValueError(f"Unknown mode {mode}")
+
+    exp_suffix = exp_suffix_by_mode[mode]
+
+    # e.g. "Empty-16x16_a2c_seed" and ends with "_baseline.csv"
+    prefix = f"{env_tag}_{mode}_seed"
+    suffix = f"_{exp_suffix}.csv"
+
+    candidates = [
+        f for f in os.listdir(csv_root)
+        if f.startswith(prefix) and f.endswith(suffix)
+    ]
+
+    if not candidates:
+        raise FileNotFoundError(
+            f"No CSV files found for env={env_tag}, mode={mode}, "
+            f"prefix={prefix}, suffix={suffix}"
+        )
+
+    # If later have multiple seeds for the same (env, mode, exp_name),
+    # loop over them; for now just take the first in sorted order.
+    candidates.sort()
+    filename = candidates[0]
+    return os.path.join(csv_root, filename)
+
+
 def smooth_series(series, window: int = 5):
     """
     Simple moving average smoothing. window is in #updates.
@@ -30,25 +77,13 @@ def plot_env(
     modes: Dict[str, str],
     smooth_window: int = 5,
 ):
-    """
-    env_tag: e.g. "Empty-16x16" or "DoorKey-6x6"
-    csv_root: directory with CSV files from train_minigrid
-    modes: mapping from mode -> label to show in legend
-    """
     for mode, label in modes.items():
-        # Expect filenames like "{env_tag}_{mode}_seed{seed}_{exp_name}.csv"
-        # To keep it simple, we just look for files starting with "env_tag_mode_"
-        prefix = f"{env_tag}_{mode}_"
-        candidates = [
-            f for f in os.listdir(csv_root)
-            if f.startswith(prefix) and f.endswith(".csv")
-        ]
-        if not candidates:
-            print(f"[WARN] No CSV files found for env={env_tag}, mode={mode}")
+        try:
+            path = select_run_file(env_tag, mode, csv_root)
+        except FileNotFoundError as e:
+            print(f"[WARN] {e}")
             continue
 
-        # For now, just take the first one. You can extend to multiple seeds later.
-        path = os.path.join(csv_root, candidates[0])
         df = load_run_csv(path)
 
         # Use global_step on x-axis, mean_return on y-axis
