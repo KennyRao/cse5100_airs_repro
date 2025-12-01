@@ -43,23 +43,27 @@ class ActorCriticNet(nn.Module):
     Simple A2C network for MiniGrid:
     - Conv encoder
     - Policy head
-    - Value head
+    - Two value heads:
+        * value_total: V^{E+I}_phi(s)
+        * value_task:  V^{E}_phi(s)
     """
     def __init__(self, obs_shape, num_actions, feature_dim=256):
         super().__init__()
         self.encoder = ConvEncoder(obs_shape, feature_dim=feature_dim)
         self.policy = nn.Linear(feature_dim, num_actions)
-        self.value = nn.Linear(feature_dim, 1)
+        self.value_total = nn.Linear(feature_dim, 1)
+        self.value_task = nn.Linear(feature_dim, 1)
 
     def forward(self, x):
         """
         x: [B, C, H, W]
-        returns: logits [B, A], value [B]
+        returns: logits [B, A], value_total [B], value_task [B]
         """
         z = self.encoder(x)
         logits = self.policy(z)
-        value = self.value(z).squeeze(-1)
-        return logits, value
+        value_total = self.value_total(z).squeeze(-1)
+        value_task = self.value_task(z).squeeze(-1)
+        return logits, value_total, value_task
 
 
 class RandomEncoder(nn.Module):

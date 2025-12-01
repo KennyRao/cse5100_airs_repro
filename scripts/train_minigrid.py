@@ -243,10 +243,16 @@ def train(config: TrainConfig):
         rewards_mix_buf = torch.zeros(
             config.num_steps, config.num_envs, device=device
         )
+        rewards_ext_buf = torch.zeros(   # extrinsic (E) only
+            config.num_steps, config.num_envs, device=device
+        )
         dones_buf = torch.zeros(
             config.num_steps, config.num_envs, device=device
         )
-        values_buf = torch.zeros(
+        values_mix_buf = torch.zeros(    # value for E+I
+            config.num_steps, config.num_envs, device=device
+        )
+        values_task_buf = torch.zeros(   # value for E
             config.num_steps, config.num_envs, device=device
         )
 
@@ -259,7 +265,7 @@ def train(config: TrainConfig):
             obs_torch = preprocess_obs(obs).to(device)
 
             with torch.no_grad():
-                logits, values = ac_net(obs_torch)
+                logits, v_total, v_task = ac_net(obs_torch)
                 dist = Categorical(logits=logits)
                 actions = dist.sample()
                 logprobs = dist.log_prob(actions)
@@ -290,30 +296,44 @@ def train(config: TrainConfig):
                     intrinsic = torch.zeros(
                         config.num_envs, device=device
                     )
-
+            
+            extrinsic_t = torch.from_numpy(extrinsic_reward).to(device)
             beta_t = beta_schedule(global_step, beta0, config.re3_kappa)
-            total_reward = torch.from_numpy(extrinsic_reward).to(device) + beta_t * intrinsic
-
+            total_reward = extrinsic_t + beta_t * intrinsic
+            
             # Save to buffers
             obs_buf[t] = obs_torch
             actions_buf[t] = actions
             logprobs_buf[t] = logprobs
             rewards_mix_buf[t] = total_reward
+            rewards_ext_buf[t] = extrinsic_t
             dones_buf[t] = torch.from_numpy(done.astype(np.float32)).to(device)
-            values_buf[t] = values
-
+            values_mix_buf[t] = v_total  # value for E+I
+            values_task_buf[t] = v_task  # value for E
+            
             obs = next_obs
 
         # Compute last value for GAE
         with torch.no_grad():
             last_obs_torch = preprocess_obs(obs).to(device)
-            _, last_values = ac_net(last_obs_torch)
+            _, last_v_total, last_v_task = ac_net(last_obs_torch)
 
-        returns, advantages = compute_gae(
+        # GAE for mixed reward
+        returns_mix, advantages = compute_gae(
             rewards_mix_buf,
-            values_buf,
+            values_mix_buf,
             dones_buf,
-            last_values,
+            last_v_total,
+            gamma=config.gamma,
+            lam=config.gae_lambda,
+        )
+        
+        # GAE for extrinsic-only reward
+        returns_ext, _ = compute_gae(
+            rewards_ext_buf,
+            values_task_buf,
+            dones_buf,
+            last_v_task,
             gamma=config.gamma,
             lam=config.gae_lambda,
         )
@@ -322,7 +342,9 @@ def train(config: TrainConfig):
         b_obs = obs_buf.reshape(-1, *obs_shape)
         b_actions = actions_buf.reshape(-1)
         b_logprobs = logprobs_buf.reshape(-1)
-        b_returns = returns.reshape(-1)
+        
+        b_returns_mix = returns_mix.reshape(-1)
+        b_returns_ext = returns_ext.reshape(-1)
         b_advantages = advantages.reshape(-1)
 
         # Normalize advantages
@@ -330,14 +352,18 @@ def train(config: TrainConfig):
             b_advantages.std() + 1e-8
         )
 
-        # A2C update
-        logits, values = ac_net(b_obs)
+        # A2C update with two value heads
+        logits, v_total_pred, v_task_pred = ac_net(b_obs)
         dist = Categorical(logits=logits)
         new_logprobs = dist.log_prob(b_actions)
         entropy = dist.entropy().mean()
 
         policy_loss = -(b_advantages * new_logprobs).mean()
-        value_loss = 0.5 * (b_returns - values).pow(2).mean()
+
+        value_loss_mix = 0.5 * (b_returns_mix - v_total_pred).pow(2).mean()
+        value_loss_task = 0.5 * (b_returns_ext - v_task_pred).pow(2).mean()
+        value_loss = value_loss_mix + value_loss_task
+
         loss = policy_loss + config.value_coef * value_loss - config.ent_coef * entropy
 
         optimizer.zero_grad()
@@ -345,11 +371,11 @@ def train(config: TrainConfig):
         nn.utils.clip_grad_norm_(ac_net.parameters(), config.max_grad_norm)
         optimizer.step()
 
-        # Bandit update (AIRS only)
+        # Bandit update (AIRS only) using task-return estimator
         if config.mode == "airs" and bandit is not None:
-            if len(ep_returns_this_update) > 0:
-                mean_ret_update = float(np.mean(ep_returns_this_update))
-                bandit.update(intrinsic_arm, mean_ret_update)
+            # One scalar per rollout: average estimated extrinsic return
+            task_return_est = float(returns_ext.mean().item())
+            bandit.update(intrinsic_arm, task_return_est)
 
         # Aggregate stats
         if len(ep_returns_this_update) > 0:
@@ -372,6 +398,8 @@ def train(config: TrainConfig):
             if total_arm_picks > 0:
                 frac_re3 = arm_counts["re3"] / total_arm_picks
                 writer.add_scalar("airs/fraction_re3", frac_re3, global_step)
+            # Log task return estimate
+            writer.add_scalar("airs/task_return_est", task_return_est, global_step)
 
         # CSV logging
         csv_fp.write(

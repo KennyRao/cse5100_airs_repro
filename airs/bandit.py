@@ -40,6 +40,6 @@ class UCBIntrinsicBandit:
         best = max(scores, key=scores.get)
         return best
 
-    def update(self, arm: str, mean_episode_return: float):
-        self.recent_returns[arm].append(float(mean_episode_return))
+    def update(self, arm: str, task_return_estimate: float):
+        self.recent_returns[arm].append(float(task_return_estimate))
         self.counts[arm] += 1
