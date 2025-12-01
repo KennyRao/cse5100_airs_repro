@@ -36,6 +36,12 @@ class UCBIntrinsicBandit:
 
     def select_arm(self) -> str:
         self.total_updates += 1
+
+        # Force each arm to be used at least once before UCB
+        for arm in self.arms:
+            if self.raw_cost_count[arm] == 0:
+                return arm
+
         scores = {}
         for arm in self.arms:
             if len(self.recent_returns[arm]) == 0:
@@ -45,11 +51,9 @@ class UCBIntrinsicBandit:
             bonus = self.c * math.sqrt(
                 math.log(self.total_updates + 1.0) / self.counts[arm]
             )
-            # Cost-aware UCB: penalize high-cost arms
-            cost_term = self.cost_penalty * self.arm_costs.get(arm, 1.0)
+            cost_term = self.cost_penalty * self.arm_costs.get(arm, 0.0)
             scores[arm] = q + bonus - cost_term
 
-        # Greedy over UCB scores
         best = max(scores, key=scores.get)
         return best
 
@@ -66,10 +70,7 @@ class UCBIntrinsicBandit:
 
     def recompute_arm_costs(self, base_arm: str = "id"):
         """
-        Recompute arm_costs as:
-            cost[arm] = avg_time(arm) / avg_time(base_arm)
-        so that cost[base_arm] ~ 1.0 and others are "times slower".
-        If base_arm has no data yet, fall back to min avg time.
+        Recompute arm_costs in a bounded, normalized way.
         """
         avg_times: Dict[str, float] = {}
         for arm in self.arms:
@@ -77,18 +78,38 @@ class UCBIntrinsicBandit:
             if cnt > 0:
                 avg = self.raw_cost_sum[arm] / cnt
             else:
+                # If we never timed this arm yet, pretend it is "normal"
                 avg = 1.0
             avg_times[arm] = avg
-        
+
         # Choose baseline
         if base_arm in avg_times and avg_times[base_arm] > 0.0:
             base = avg_times[base_arm]
         else:
-            # Smallest non-zero avg, or 1.0
             base = min(avg_times.values()) if len(avg_times) > 0 else 1.0
             if base <= 0.0:
                 base = 1.0
 
-        # Normalize
+        # 1) raw slowdown ratios (>= 0)
+        raw_ratios: Dict[str, float] = {}
         for arm in self.arms:
-            self.arm_costs[arm] = max(avg_times[arm] / base, 1e-3)
+            raw = avg_times[arm] / base
+            raw_ratios[arm] = raw
+
+        # 2) clip extreme ratios so we don't explode the scale
+        R_MAX = 50.0  # e.g., treat anything > 50x as "very expensive but finite"
+        for arm in self.arms:
+            raw_ratios[arm] = min(raw_ratios[arm], R_MAX)
+
+        # 3) normalize to [0, 1] so cheapest = 0, slowest = 1
+        min_raw = min(raw_ratios.values())
+        max_raw = max(raw_ratios.values())
+
+        if max_raw == min_raw:
+            # All arms look the same, no cost-based bias
+            for arm in self.arms:
+                self.arm_costs[arm] = 0.0
+        else:
+            for arm in self.arms:
+                # cost 0 for fastest, 1 for slowest
+                self.arm_costs[arm] = (raw_ratios[arm] - min_raw) / (max_raw - min_raw)
