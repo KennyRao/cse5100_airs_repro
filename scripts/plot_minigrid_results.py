@@ -1,7 +1,7 @@
 # scripts/plot_minigrid_results.py
 import argparse
 import os
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -18,7 +18,7 @@ def load_run_csv(path: str) -> pd.DataFrame:
 def select_run_file(env_tag: str, mode: str, csv_root: str, exp_name: str) -> str:
     """
     Select CSV for given env, mode, and exp_name.
-    
+
     run_name format (from train_minigrid.py):
       f"{env_tag}_{mode}_seed{seed}_{exp_name}.csv"
     """
@@ -43,6 +43,48 @@ def select_run_file(env_tag: str, mode: str, csv_root: str, exp_name: str) -> st
     return os.path.join(csv_root, filename)
 
 
+def detect_env_tags(csv_root: str) -> List[str]:
+    """
+    Infer env_tags from CSV filenames of the form:
+        {env_tag}_{mode}_seed{seed}_{exp_name}.csv
+    """
+    env_tags = set()
+    for f in os.listdir(csv_root):
+        if not f.endswith(".csv"):
+            continue
+        parts = f.split("_")
+        # Expect at least: [env_tag, mode, 'seedX', exp_name.csv]
+        if len(parts) < 4:
+            continue
+        env_tag = parts[0]
+        env_tags.add(env_tag)
+    return sorted(env_tags)
+
+
+def detect_airs_exp_names(env_tag: str, csv_root: str) -> List[str]:
+    """
+    Infer AIRS exp_names from files of the form:
+      {env_tag}_airs_seed{seed}_{exp_name}.csv
+
+    Example filename:
+      Empty-16x16_airs_seed1_airs_cost0.1.csv
+    """
+    exp_names = set()
+    prefix = f"{env_tag}_airs_seed"
+    for f in os.listdir(csv_root):
+        if not (f.startswith(prefix) and f.endswith(".csv")):
+            continue
+        
+        rest = f.split("_seed", 1)[1]
+        parts = rest.split("_", 1)
+        if len(parts) < 2:
+            continue
+        exp_with_ext = parts[1]
+        exp_name = exp_with_ext[:-4]  # remove .csv
+        exp_names.add(exp_name)
+    return sorted(exp_names)
+
+
 def smooth_series(series, window: int = 5):
     """
     Simple moving average smoothing. window is in #updates.
@@ -57,7 +99,7 @@ def plot_env(
     a2c_exp: str,
     re3_exp: str,
     rise_exp: str,
-    airs_exp_names: List[str],
+    airs_exp_names: Optional[List[str]],
     smooth_window: int = 5,
 ):
     # Baselines
@@ -85,7 +127,9 @@ def plot_env(
         y_smooth = smooth_series(y, window=smooth_window)
         ax.plot(x, y_smooth, label=label)
 
-    # AIRS variants
+    if not airs_exp_names:
+        airs_exp_names = detect_airs_exp_names(env_tag, csv_root)
+
     for exp_name in airs_exp_names:
         try:
             path = select_run_file(env_tag, "airs", csv_root, exp_name)
@@ -105,7 +149,6 @@ def plot_env(
 
         # Label based on exp_name
         label = f"A2C + AIRS ({exp_name})"
-
         ax.plot(x, y_smooth, label=label)
 
     ax.set_xlabel("Environment Steps")
@@ -138,9 +181,12 @@ def main():
     parser.add_argument(
         "--airs_exp_names",
         type=str,
-        nargs="+",
-        default=["airs_nocost", "airs_cost0.1"],
-        help="List of exp_name strings for AIRS variants to plot.",
+        nargs="*",
+        default=None,
+        help=(
+            "Optional list of exp_name strings for AIRS variants to plot. "
+            "If omitted, auto-detect from CSV filenames for each env."
+        ),
     )
     parser.add_argument(
         "--a2c_exp",
@@ -160,10 +206,29 @@ def main():
         default="rise",
         help="exp_name used for A2C+RISE runs.",
     )
+    parser.add_argument(
+        "--env_tags",
+        type=str,
+        nargs="*",
+        default=None,
+        help=(
+            "Env tags to plot, e.g. Empty-16x16 DoorKey-6x6. "
+            "If omitted, auto-detect from CSV filenames."
+        ),
+    )
+
     args = parser.parse_args()
 
-    env_tags = ["Empty-16x16", "DoorKey-6x6"]
-    fig, axes = plt.subplots(1, len(env_tags), figsize=(12, 4), sharey=True)
+    # Decide which env_tags to plot
+    if args.env_tags:
+        env_tags = args.env_tags
+    else:
+        env_tags = detect_env_tags(args.results_dir)
+        if not env_tags:
+            print(f"No CSV files found in {args.results_dir}. Nothing to plot.")
+            return
+
+    fig, axes = plt.subplots(1, len(env_tags), figsize=(6 * len(env_tags), 4), sharey=True)
 
     if len(env_tags) == 1:
         axes = [axes]
