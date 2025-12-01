@@ -9,42 +9,21 @@ import pandas as pd
 
 def load_run_csv(path: str) -> pd.DataFrame:
     """
-    Load one run CSV and return DataFrame with:
-    columns: update, global_step, mean_return, policy_loss, value_loss, entropy, arm
+    Load one run CSV and return DataFrame
     """
     df = pd.read_csv(path)
-    # Some runs may have NaNs in mean_return; keep them, we'll handle in plotting.
     return df
 
 
-def select_run_file(env_tag: str, mode: str, csv_root: str) -> str:
+def select_run_file(env_tag: str, mode: str, csv_root: str, exp_name: str) -> str:
     """
-    Pick the correct CSV file for a given env + mode,
-    based on the naming convention in train_minigrid.py:
-
-        run_name = f"{env_tag}_{mode}_seed{seed}_{exp_name}"
-
-    where exp_name is usually:
-      - 'baseline' for a2c
-      - 're3'      for a2c_re3
-      - 'airs'     for airs
+    Select CSV for given env, mode, and exp_name.
+    
+    run_name format (from train_minigrid.py):
+      f"{env_tag}_{mode}_seed{seed}_{exp_name}.csv"
     """
-    # Map each mode to the expected exp_name suffix
-    exp_suffix_by_mode = {
-        "a2c": "baseline",
-        "a2c_re3": "re3",
-        "a2c_rise": "rise",
-        "airs": "airs",
-    }
-
-    if mode not in exp_suffix_by_mode:
-        raise ValueError(f"Unknown mode {mode}")
-
-    exp_suffix = exp_suffix_by_mode[mode]
-
-    # e.g. "Empty-16x16_a2c_seed" and ends with "_baseline.csv"
     prefix = f"{env_tag}_{mode}_seed"
-    suffix = f"_{exp_suffix}.csv"
+    suffix = f"_{exp_name}.csv"
 
     candidates = [
         f for f in os.listdir(csv_root)
@@ -54,7 +33,7 @@ def select_run_file(env_tag: str, mode: str, csv_root: str) -> str:
     if not candidates:
         raise FileNotFoundError(
             f"No CSV files found for env={env_tag}, mode={mode}, "
-            f"prefix={prefix}, suffix={suffix}"
+            f"exp_name={exp_name}, prefix={prefix}, suffix={suffix}"
         )
 
     # If later have multiple seeds for the same (env, mode, exp_name),
@@ -75,28 +54,57 @@ def plot_env(
     env_tag: str,
     csv_root: str,
     ax: plt.Axes,
-    modes: Dict[str, str],
+    a2c_exp: str,
+    re3_exp: str,
+    rise_exp: str,
+    airs_exp_names: List[str],
     smooth_window: int = 5,
 ):
-    for mode, label in modes.items():
+    # Baselines
+    modes_and_exps = [
+        ("a2c", a2c_exp, "A2C"),
+        ("a2c_re3", re3_exp, "A2C + RE3"),
+        ("a2c_rise", rise_exp, "A2C + RISE"),
+    ]
+
+    for mode, exp_name, label in modes_and_exps:
         try:
-            path = select_run_file(env_tag, mode, csv_root)
+            path = select_run_file(env_tag, mode, csv_root, exp_name)
         except FileNotFoundError as e:
             print(f"[WARN] {e}")
             continue
 
         df = load_run_csv(path)
-
-        # Use global_step on x-axis, mean_return on y-axis
         x = df["global_step"]
         y = df["mean_return"]
 
-        # Drop NaNs for plotting (episodes might not finish every update)
         mask = y.notna()
         x = x[mask]
         y = y[mask]
 
         y_smooth = smooth_series(y, window=smooth_window)
+        ax.plot(x, y_smooth, label=label)
+
+    # AIRS variants
+    for exp_name in airs_exp_names:
+        try:
+            path = select_run_file(env_tag, "airs", csv_root, exp_name)
+        except FileNotFoundError as e:
+            print(f"[WARN] {e}")
+            continue
+
+        df = load_run_csv(path)
+        x = df["global_step"]
+        y = df["mean_return"]
+
+        mask = y.notna()
+        x = x[mask]
+        y = y[mask]
+
+        y_smooth = smooth_series(y, window=smooth_window)
+
+        # Label based on exp_name
+        label = f"A2C + AIRS ({exp_name})"
 
         ax.plot(x, y_smooth, label=label)
 
@@ -127,18 +135,34 @@ def main():
         default="minigrid_comparison.png",
         help="Path to save the comparison figure.",
     )
+    parser.add_argument(
+        "--airs_exp_names",
+        type=str,
+        nargs="+",
+        default=["airs_nocost", "airs_cost0.1"],
+        help="List of exp_name strings for AIRS variants to plot.",
+    )
+    parser.add_argument(
+        "--a2c_exp",
+        type=str,
+        default="baseline",
+        help="exp_name used for plain A2C runs.",
+    )
+    parser.add_argument(
+        "--re3_exp",
+        type=str,
+        default="re3",
+        help="exp_name used for A2C+RE3 runs.",
+    )
+    parser.add_argument(
+        "--rise_exp",
+        type=str,
+        default="rise",
+        help="exp_name used for A2C+RISE runs.",
+    )
     args = parser.parse_args()
 
-    modes = {
-        "a2c": "A2C",
-        "a2c_re3": "A2C + RE3",
-        "a2c_rise": "A2C + RISE",
-        "airs": "A2C + AIRS (ID, RE3, RISE)",
-    }
-
-    # These tags match how we built run_name: "Empty-16x16", "DoorKey-6x6"
     env_tags = ["Empty-16x16", "DoorKey-6x6"]
-
     fig, axes = plt.subplots(1, len(env_tags), figsize=(12, 4), sharey=True)
 
     if len(env_tags) == 1:
@@ -149,7 +173,10 @@ def main():
             env_tag=env_tag,
             csv_root=args.results_dir,
             ax=ax,
-            modes=modes,
+            a2c_exp=args.a2c_exp,
+            re3_exp=args.re3_exp,
+            rise_exp=args.rise_exp,
+            airs_exp_names=args.airs_exp_names,
             smooth_window=args.smooth_window,
         )
 

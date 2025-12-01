@@ -40,13 +40,14 @@ class TrainConfig:
     re3_beta0_empty: float = 0.1
     re3_beta0_door: float = 0.005
     re3_kappa: float = 0.0
-    
+
     # RISE hyperparam
     rise_alpha: float = 0.5
 
     # AIRS bandit hyperparams
     airs_c: float = 1.0
     airs_window: int = 10
+    airs_cost_penalty: float = 0.0
 
     seed: int = 1
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -176,10 +177,17 @@ def train(config: TrainConfig):
 
     # Bandit for AIRS
     if config.mode == "airs":
+        arm_costs = {
+            "id": 1.0,  # almost free
+            "re3": 5.0,  # encoder + cdist + k-NN
+            "rise": 5.0,  # similar complexity to RE3
+        }
         bandit = UCBIntrinsicBandit(
             arms=["id", "re3", "rise"],
             c=config.airs_c,
-            window=config.airs_window
+            window=config.airs_window,
+            cost_penalty=config.airs_cost_penalty,
+            arm_costs=arm_costs
         )
     else:
         bandit = None
@@ -472,6 +480,8 @@ def train(config: TrainConfig):
 
 def main():
     parser = argparse.ArgumentParser()
+
+    # mode
     parser.add_argument(
         "--env_id",
         type=str,
@@ -485,11 +495,44 @@ def main():
         default="a2c",
         help="Which method to run",
     )
+
+    # randomness
     parser.add_argument(
-        "--total_timesteps", type=int, default=1000_000,
+        "--total_timesteps", type=int, default=1_000_000,
         help="Total env steps across all envs"
     )
     parser.add_argument("--seed", type=int, default=1)
+
+    # Core training hyperparameters
+    parser.add_argument("--num_envs", type=int, default=16)
+    parser.add_argument("--num_steps", type=int, default=128)
+    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--gae_lambda", type=float, default=0.95)
+
+    parser.add_argument("--learning_rate", type=float, default=2.5e-4)
+    parser.add_argument("--ent_coef", type=float, default=0.01)
+    parser.add_argument("--value_coef", type=float, default=0.5)
+    parser.add_argument("--max_grad_norm", type=float, default=0.5)
+
+    # Intrinsic reward hyperparams
+    parser.add_argument("--re3_k", type=int, default=3)
+    parser.add_argument("--re3_beta0_empty", type=float, default=0.1)
+    parser.add_argument("--re3_beta0_door", type=float, default=0.005)
+    parser.add_argument("--re3_kappa", type=float, default=0.0)
+
+    parser.add_argument("--rise_alpha", type=float, default=0.5)
+
+    # AIRS bandit hyperparams
+    parser.add_argument("--airs_c", type=float, default=1.0)
+    parser.add_argument("--airs_window", type=int, default=10)
+    parser.add_argument(
+        "--airs_cost_penalty",
+        type=float,
+        default=0.0,
+        help="λ: penalty per unit arm_cost in the bandit UCB score",
+    )
+
+    # Logging / paths
     parser.add_argument(
         "--exp_name",
         type=str,
@@ -515,22 +558,66 @@ def main():
         help="Directory to store model checkpoints.",
     )
     parser.add_argument(
+        "--log_interval_updates",
+        type=int,
+        default=10,
+        help="How often (in updates) to print to console.",
+    )
+    parser.add_argument(
+        "--save_interval_updates",
+        type=int,
+        default=50,
+        help="How often (in updates) to save checkpoints.",
+    )
+    parser.add_argument(
         "--load_path",
         type=str,
         default=None,
         help="Optional path to a checkpoint .pt file to resume from.",
     )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Optional device override, e.g. 'cpu' or 'cuda'. "
+             "If None, uses CUDA if available.",
+    )
+
     args = parser.parse_args()
+
+    # Determine device
+    device = args.device
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
 
     cfg = TrainConfig(
         env_id=args.env_id,
         mode=args.mode,
         total_timesteps=args.total_timesteps,
+        num_envs=args.num_envs,
+        num_steps=args.num_steps,
+        gamma=args.gamma,
+        gae_lambda=args.gae_lambda,
+        learning_rate=args.learning_rate,
+        ent_coef=args.ent_coef,
+        value_coef=args.value_coef,
+        max_grad_norm=args.max_grad_norm,
+        re3_k=args.re3_k,
+        re3_beta0_empty=args.re3_beta0_empty,
+        re3_beta0_door=args.re3_beta0_door,
+        re3_kappa=args.re3_kappa,
+        rise_alpha=args.rise_alpha,
+        airs_c=args.airs_c,
+        airs_window=args.airs_window,
+        airs_cost_penalty=args.airs_cost_penalty,
         seed=args.seed,
-        exp_name=args.exp_name,
+        device=device,
         log_dir=args.log_dir,
         results_dir=args.results_dir,
         checkpoints_dir=args.checkpoints_dir,
+        exp_name=args.exp_name,
+        log_interval_updates=args.log_interval_updates,
+        save_interval_updates=args.save_interval_updates,
         load_path=args.load_path,
     )
     train(cfg)
