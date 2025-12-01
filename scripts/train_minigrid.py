@@ -405,11 +405,11 @@ def train(config: TrainConfig):
         writer.add_scalar("loss/value", value_loss.item(), global_step)
         writer.add_scalar("loss/entropy", entropy.item(), global_step)
         if config.mode == "airs":
-            # fraction of updates that picked RE3 so far
-            total_arm_picks = arm_counts["id"] + arm_counts["re3"]
+            total_arm_picks = sum(arm_counts.values())
             if total_arm_picks > 0:
-                frac_re3 = arm_counts["re3"] / total_arm_picks
-                writer.add_scalar("airs/fraction_re3", frac_re3, global_step)
+                for arm in ["id", "re3", "rise"]:
+                    frac = arm_counts[arm] / total_arm_picks
+                    writer.add_scalar(f"airs/fraction_{arm}", frac, global_step)
             # Log task return estimate
             writer.add_scalar("airs/task_return_est", task_return_est, global_step)
 

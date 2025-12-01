@@ -121,7 +121,9 @@ class RISEIntrinsic:
         k_eff = min(self.k, dists.shape[1])
         knn_dists, _ = torch.topk(dists, k=k_eff, largest=False, dim=1)
         # squared distance ^ (1 - alpha)
-        intrinsic = knn_dists.pow(2.0).pow(1.0 - self.alpha).mean(dim=1)
+        eps = 1e-8
+        sq = knn_dists.pow(2.0) + eps
+        intrinsic = sq.pow(1.0 - self.alpha).mean(dim=1)
 
         new_buffer = torch.cat([self._buffer, z.detach()], dim=0)
         if new_buffer.shape[0] > self.max_buffer_size:
