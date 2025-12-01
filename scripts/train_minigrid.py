@@ -18,6 +18,7 @@ from airs.networks import ActorCriticNet, RandomEncoder
 from airs.intrinsic import IdentityIntrinsic, RE3Intrinsic, RISEIntrinsic, beta_schedule
 from airs.bandit import UCBIntrinsicBandit
 
+import time
 
 @dataclass
 class TrainConfig:
@@ -177,17 +178,12 @@ def train(config: TrainConfig):
 
     # Bandit for AIRS
     if config.mode == "airs":
-        arm_costs = {
-            "id": 1.0,  # almost free
-            "re3": 5.0,  # encoder + cdist + k-NN
-            "rise": 5.0,  # similar complexity to RE3
-        }
         bandit = UCBIntrinsicBandit(
             arms=["id", "re3", "rise"],
             c=config.airs_c,
             window=config.airs_window,
             cost_penalty=config.airs_cost_penalty,
-            arm_costs=arm_costs
+            arm_costs=None  # default costs are 1.0
         )
     else:
         bandit = None
@@ -308,6 +304,11 @@ def train(config: TrainConfig):
 
             # Intrinsic reward
             with torch.no_grad():
+                # Timing for cost-aware bandit
+                if device.type == "cuda":
+                    torch.cuda.synchronize()
+                t0 = time.perf_counter()
+                
                 if intrinsic_arm == "id":
                     intrinsic = id_intrinsic.compute(obs_torch)
                 elif intrinsic_arm == "re3":
@@ -315,9 +316,16 @@ def train(config: TrainConfig):
                 elif intrinsic_arm == "rise":
                     intrinsic = rise_intrinsic.compute(obs_torch)
                 else:
-                    intrinsic = torch.zeros(
-                        config.num_envs, device=device
-                    )
+                    intrinsic = torch.zeros(config.num_envs, device=device)
+
+                if device.type == "cuda":
+                    torch.cuda.synchronize()
+                t1 = time.perf_counter()
+                elapsed = t1 - t0
+            
+            # Only AIRS uses the bandit & runtime measurements
+            if config.mode == "airs" and bandit is not None and intrinsic_arm in ["id", "re3", "rise"]:
+                bandit.record_cost(intrinsic_arm, elapsed)
             
             extrinsic_t = torch.from_numpy(extrinsic_reward).to(device)
             beta_t = beta_schedule(global_step, beta0, config.re3_kappa)
@@ -398,6 +406,10 @@ def train(config: TrainConfig):
             # One scalar per rollout: average estimated extrinsic return
             task_return_est = float(returns_ext.mean().item())
             bandit.update(intrinsic_arm, task_return_est)
+        
+        # After this update, refresh the cost estimates based on runtime
+        if config.mode == "airs" and bandit is not None:
+            bandit.recompute_arm_costs(base_arm="id")
 
         # Aggregate stats
         if len(ep_returns_this_update) > 0:
@@ -422,6 +434,11 @@ def train(config: TrainConfig):
                     writer.add_scalar(f"airs/fraction_{arm}", frac, global_step)
             # Log task return estimate
             writer.add_scalar("airs/task_return_est", task_return_est, global_step)
+            
+            # Log cost estimates
+            for arm in ["id", "re3", "rise"]:
+                if arm in bandit.arm_costs:
+                    writer.add_scalar(f"airs/cost_{arm}", bandit.arm_costs[arm], global_step)
 
         # CSV logging
         csv_fp.write(
