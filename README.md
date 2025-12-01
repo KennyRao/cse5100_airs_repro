@@ -38,7 +38,7 @@ Activate it:
 - **Windows (PowerShell or CMD)**
 
   ```bash
-  .venv\Scripts ctivate
+  .venv\Scripts\Activate
   ```
 
 - **macOS / Linux**
