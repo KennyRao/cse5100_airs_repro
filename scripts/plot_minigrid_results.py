@@ -131,7 +131,7 @@ def main():
     modes = {
         "a2c": "A2C",
         "a2c_re3": "A2C + RE3",
-        "airs": "A2C + AIRS {ID, RE3}",
+        "airs": "A2C + AIRS",
     }
 
     # These tags match how we built run_name: "Empty-16x16", "DoorKey-6x6"

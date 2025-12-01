@@ -15,7 +15,7 @@ import gymnasium as gym
 import minigrid
 
 from airs.networks import ActorCriticNet, RandomEncoder
-from airs.intrinsic import IdentityIntrinsic, RE3Intrinsic, beta_schedule
+from airs.intrinsic import IdentityIntrinsic, RE3Intrinsic, RISEIntrinsic, beta_schedule
 from airs.bandit import UCBIntrinsicBandit
 
 
@@ -40,6 +40,9 @@ class TrainConfig:
     re3_beta0_empty: float = 0.1
     re3_beta0_door: float = 0.005
     re3_kappa: float = 0.0
+    
+    # RISE hyperparam
+    rise_alpha: float = 0.5
 
     # AIRS bandit hyperparams
     airs_c: float = 1.0
@@ -163,11 +166,18 @@ def train(config: TrainConfig):
         k=config.re3_k,
         max_buffer_size=10000,
     )
+    rise_intrinsic = RISEIntrinsic(
+        encoder=rnd_encoder,
+        device=device,
+        alpha=config.rise_alpha,
+        k=config.re3_k,
+        max_buffer_size=10000,
+    )
 
     # Bandit for AIRS
     if config.mode == "airs":
         bandit = UCBIntrinsicBandit(
-            arms=["id", "re3"],
+            arms=["id", "re3", "rise"],
             c=config.airs_c,
             window=config.airs_window
         )
@@ -216,7 +226,7 @@ def train(config: TrainConfig):
     # Stats
     episode_returns: List[float] = []
     # For AIRS: count how often each arm is selected
-    arm_counts = {"id": 0, "re3": 0}
+    arm_counts = {"id": 0, "re3": 0, "rise": 0}
 
     for update in tqdm(range(start_update, num_updates)):
         # Decide which intrinsic mode to use for this update
@@ -292,6 +302,8 @@ def train(config: TrainConfig):
                     intrinsic = id_intrinsic.compute(obs_torch)
                 elif intrinsic_arm == "re3":
                     intrinsic = re3_intrinsic.compute(obs_torch)
+                elif intrinsic_arm == "rise":
+                    intrinsic = rise_intrinsic.compute(obs_torch)
                 else:
                     intrinsic = torch.zeros(
                         config.num_envs, device=device

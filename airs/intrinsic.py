@@ -81,6 +81,56 @@ class RE3Intrinsic:
         return intrinsic
 
 
+class RISEIntrinsic:
+    """
+    RISE intrinsic (Renyi state entropy):
+        I_t = 1/k sum_i (||e_t - e_i||^2)^{1 - alpha}
+    """
+    def __init__(
+        self,
+        encoder,
+        device: torch.device,
+        alpha: float = 0.5,
+        k: int = 3,
+        max_buffer_size: int = 10000,
+    ):
+        self.encoder = encoder
+        self.device = device
+        self.alpha = alpha
+        self.k = k
+        self.max_buffer_size = max_buffer_size
+        self._buffer: Optional[torch.Tensor] = None  # [N, D]
+
+    def reset(self):
+        self._buffer = None
+
+    @torch.no_grad()
+    def compute(self, obs_tensor: torch.Tensor) -> torch.Tensor:
+        """
+        obs_tensor: [B, C, H, W]
+        returns: [B] intrinsic rewards
+        """
+        z = self.encoder(obs_tensor)  # [B, D]
+
+        if self._buffer is None or self._buffer.shape[0] == 0:
+            intrinsic = torch.zeros(z.shape[0], device=self.device)
+            self._buffer = z.detach().clone()
+            return intrinsic
+
+        dists = torch.cdist(z, self._buffer)  # [B, N]
+        k_eff = min(self.k, dists.shape[1])
+        knn_dists, _ = torch.topk(dists, k=k_eff, largest=False, dim=1)
+        # squared distance ^ (1 - alpha)
+        intrinsic = knn_dists.pow(2.0).pow(1.0 - self.alpha).mean(dim=1)
+
+        new_buffer = torch.cat([self._buffer, z.detach()], dim=0)
+        if new_buffer.shape[0] > self.max_buffer_size:
+            new_buffer = new_buffer[-self.max_buffer_size:]
+        self._buffer = new_buffer
+
+        return intrinsic
+
+
 def beta_schedule(global_step: int, beta0: float, kappa: float) -> float:
     """
     β_t = β_0 * (1 - κ)^t

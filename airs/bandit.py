@@ -7,7 +7,7 @@ from typing import Dict, List
 class UCBIntrinsicBandit:
     """
     Simple UCB bandit over intrinsic reward choices.
-    Arms are strings, e.g. ["id", "re3"].
+    Arms are strings, e.g. ["id", "re3", "rise"].
 
     We keep a sliding window of recent mean extrinsic returns per arm
     and use UCB1:
