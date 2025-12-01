@@ -1,7 +1,7 @@
 <!-- README.md -->
 # cse5100_airs_repro
 
-Reproduction and extension of **Automatic Intrinsic Reward Shaping (AIRS)** on MiniGrid environments, with:
+Reproduction and extension of [**Automatic Intrinsic Reward Shaping (AIRS)**](https://arxiv.org/abs/2301.10886) on MiniGrid environments, with:
 
 - plain A2C baseline
 - A2C + RE3 intrinsic reward
