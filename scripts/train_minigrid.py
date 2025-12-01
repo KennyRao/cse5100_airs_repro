@@ -20,6 +20,7 @@ from airs.bandit import UCBIntrinsicBandit
 
 import time
 
+
 @dataclass
 class TrainConfig:
     env_id: str
@@ -56,13 +57,8 @@ class TrainConfig:
     # Logging / saving
     log_dir: str = "runs"
     results_dir: str = "results"
-    checkpoints_dir: str = "checkpoints"
     exp_name: str = "default"
     log_interval_updates: int = 10
-    save_interval_updates: int = 50
-
-    # Optional: path to resume from
-    load_path: Optional[str] = None
 
 
 def make_env(env_id: str, seed: int):
@@ -134,7 +130,6 @@ def train(config: TrainConfig):
     # Make dirs
     os.makedirs(config.log_dir, exist_ok=True)
     os.makedirs(config.results_dir, exist_ok=True)
-    os.makedirs(config.checkpoints_dir, exist_ok=True)
 
     # TensorBoard writer
     tb_path = os.path.join(config.log_dir, run_name)
@@ -183,33 +178,13 @@ def train(config: TrainConfig):
             c=config.airs_c,
             window=config.airs_window,
             cost_penalty=config.airs_cost_penalty,
-            arm_costs=None  # default costs are 1.0
+            arm_costs=None,  # will be learned from runtime
         )
     else:
         bandit = None
 
-    # Optional: load checkpoint
     global_step = 0
     start_update = 0
-    if config.load_path is not None:
-        print(f"Loading checkpoint from {config.load_path}")
-        ckpt = torch.load(config.load_path, map_location=device)
-        ac_net.load_state_dict(ckpt["model_state_dict"])
-        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        global_step = ckpt.get("global_step", 0)
-        start_update = ckpt.get("update", 0) + 1
-        # Restore bandit state for AIRS
-        if config.mode == "airs" and bandit is not None and "bandit_state" in ckpt:
-            bs = ckpt["bandit_state"]
-            bandit.total_updates = bs["total_updates"]
-            bandit.counts = bs["counts"]
-            # recent_returns: list of floats per arm
-            from collections import deque
-            bandit.recent_returns = {
-                arm: deque(vals, maxlen=config.airs_window)
-                for arm, vals in bs["recent_returns"].items()
-            }
-        print(f"Resumed at global_step={global_step}, update={start_update}")
 
     total_steps = config.total_timesteps
     num_updates = total_steps // (config.num_envs * config.num_steps)
@@ -456,37 +431,6 @@ def train(config: TrainConfig):
                 f"Mean episode return (last 50) = {mean_return:.3f}"
             )
 
-        # Save checkpoint
-        if ((update + 1) % config.save_interval_updates == 0) or \
-           (update + 1 == num_updates):
-            ckpt_path = os.path.join(
-                config.checkpoints_dir,
-                f"{run_name}_upd{update+1}.pt"
-            )
-            bandit_state = None
-            if config.mode == "airs" and bandit is not None:
-                bandit_state = {
-                    "total_updates": bandit.total_updates,
-                    "counts": bandit.counts,
-                    "recent_returns": {
-                        arm: list(deq)
-                        for arm, deq in bandit.recent_returns.items()
-                    },
-                }
-            ckpt = {
-                "model_state_dict": ac_net.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "config": asdict(config),
-                "global_step": global_step,
-                "update": update,
-                "env_id": config.env_id,
-                "mode": config.mode,
-                "bandit_state": bandit_state,
-                "run_name": run_name,
-            }
-            torch.save(ckpt, ckpt_path)
-            print(f"Saved checkpoint to {ckpt_path}")
-
     if config.mode == "airs":
         print("AIRS arm selection counts:", arm_counts)
 
@@ -569,28 +513,10 @@ def main():
         help="Directory to store CSV result files.",
     )
     parser.add_argument(
-        "--checkpoints_dir",
-        type=str,
-        default="checkpoints",
-        help="Directory to store model checkpoints.",
-    )
-    parser.add_argument(
         "--log_interval_updates",
         type=int,
         default=10,
         help="How often (in updates) to print to console.",
-    )
-    parser.add_argument(
-        "--save_interval_updates",
-        type=int,
-        default=50,
-        help="How often (in updates) to save checkpoints.",
-    )
-    parser.add_argument(
-        "--load_path",
-        type=str,
-        default=None,
-        help="Optional path to a checkpoint .pt file to resume from.",
     )
     parser.add_argument(
         "--device",
@@ -631,11 +557,8 @@ def main():
         device=device,
         log_dir=args.log_dir,
         results_dir=args.results_dir,
-        checkpoints_dir=args.checkpoints_dir,
         exp_name=args.exp_name,
         log_interval_updates=args.log_interval_updates,
-        save_interval_updates=args.save_interval_updates,
-        load_path=args.load_path,
     )
     train(cfg)
 
