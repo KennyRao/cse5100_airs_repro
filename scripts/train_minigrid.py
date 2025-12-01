@@ -27,9 +27,9 @@ class TrainConfig:
     mode: str  # "a2c", "a2c_re3", "a2c_rise", "airs"
 
     total_timesteps: int = 200_000
-    num_envs: int = 16
+    num_envs: int = 16  # number of parallel envs
     num_steps: int = 128  # steps per rollout
-    gamma: float = 0.99
+    gamma: float = 0.99  # discount factor
     gae_lambda: float = 0.95
 
     learning_rate: float = 2.5e-4
