@@ -138,7 +138,11 @@ def train(config: TrainConfig):
     # CSV results file (for plotting later)
     csv_path = os.path.join(config.results_dir, f"{run_name}.csv")
     csv_fp = open(csv_path, "w", encoding="utf-8")
-    csv_fp.write("update,global_step,mean_return,policy_loss,value_loss,entropy,arm\n")
+    csv_fp.write(
+        "update,global_step,mean_return,policy_loss,value_loss,entropy,arm,"
+        "task_return_est,mean_ext_reward,mean_int_reward,steps_per_sec,"
+        "cost_id,cost_re3,cost_rise\n"
+    )
 
     # Vectorized env
     envs = gym.vector.SyncVectorEnv(
@@ -208,6 +212,16 @@ def train(config: TrainConfig):
     arm_counts = {"id": 0, "re3": 0, "rise": 0}
 
     for update in tqdm(range(start_update, num_updates)):
+        # Measure wall-clock performance per update
+        update_start_time = time.perf_counter()
+
+        # For plotting reward composition
+        sum_ext_reward = 0.0
+        sum_int_reward = 0.0
+
+        # For AIRS: this will be filled when we update the bandit
+        task_return_est = float("nan")
+
         # Decide which intrinsic mode to use for this update
         if config.mode == "a2c":
             intrinsic_arm = "id"
@@ -306,6 +320,10 @@ def train(config: TrainConfig):
             beta_t = beta_schedule(global_step, beta0, config.re3_kappa)
             total_reward = extrinsic_t + beta_t * intrinsic
             
+            # Accumulate per-step reward stats for logging
+            sum_ext_reward += extrinsic_t.mean().item()
+            sum_int_reward += (beta_t * intrinsic).mean().item()
+            
             # Save to buffers
             obs_buf[t] = obs_torch
             actions_buf[t] = actions
@@ -385,6 +403,23 @@ def train(config: TrainConfig):
         # After this update, refresh the cost estimates based on runtime
         if config.mode == "airs" and bandit is not None:
             bandit.recompute_arm_costs(base_arm="id")
+        
+        # Compute per-update averages for logging/plotting
+        mean_ext_reward = sum_ext_reward / config.num_steps
+        mean_int_reward = sum_int_reward / config.num_steps
+
+        # Wall-clock efficiency: steps per second this update
+        update_duration = time.perf_counter() - update_start_time
+        steps_this_update = config.num_envs * config.num_steps
+        steps_per_sec = steps_this_update / max(update_duration, 1e-8)
+
+        # Current cost estimates for each arm (NaN for non-AIRS)
+        if config.mode == "airs" and bandit is not None:
+            cost_id  = float(bandit.arm_costs.get("id",   float("nan")))
+            cost_re3 = float(bandit.arm_costs.get("re3",  float("nan")))
+            cost_rise = float(bandit.arm_costs.get("rise", float("nan")))
+        else:
+            cost_id = cost_re3 = cost_rise = float("nan")
 
         # Aggregate stats
         if len(ep_returns_this_update) > 0:
@@ -401,6 +436,12 @@ def train(config: TrainConfig):
         writer.add_scalar("loss/policy", policy_loss.item(), global_step)
         writer.add_scalar("loss/value", value_loss.item(), global_step)
         writer.add_scalar("loss/entropy", entropy.item(), global_step)
+        
+        # Reward composition and speed
+        writer.add_scalar("reward/mean_ext_per_step", mean_ext_reward, global_step)
+        writer.add_scalar("reward/mean_int_per_step", mean_int_reward, global_step)
+        writer.add_scalar("speed/steps_per_sec", steps_per_sec, global_step)
+
         if config.mode == "airs":
             total_arm_picks = sum(arm_counts.values())
             if total_arm_picks > 0:
@@ -419,7 +460,11 @@ def train(config: TrainConfig):
         csv_fp.write(
             f"{update},{global_step},{mean_return},"
             f"{policy_loss.item()},{value_loss.item()},{entropy.item()},"
-            f"{intrinsic_arm}\n"
+            f"{intrinsic_arm},"
+            f"{task_return_est},"
+            f"{mean_ext_reward},{mean_int_reward},"
+            f"{steps_per_sec},"
+            f"{cost_id},{cost_re3},{cost_rise}\n"
         )
         csv_fp.flush()
 
