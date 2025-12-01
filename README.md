@@ -177,13 +177,13 @@ To compare, run a second experiment with `airs_cost_penalty > 0`.
 **Empty‑16x16 (AIRS, λ > 0)**
 
 ```bash
-python -m scripts.train_minigrid   --env_id MiniGrid-Empty-16x16-v0   --mode airs   --exp_name airs_cost1   --airs_cost_penalty 1.0
+python -m scripts.train_minigrid   --env_id MiniGrid-Empty-16x16-v0   --mode airs   --exp_name airs_cost0.1   --airs_cost_penalty 0.1
 ```
 
 **DoorKey‑6x6 (AIRS, λ > 0)**
 
 ```bash
-python -m scripts.train_minigrid   --env_id MiniGrid-DoorKey-6x6-v0   --mode airs   --exp_name airs_cost1   --airs_cost_penalty 1.0
+python -m scripts.train_minigrid   --env_id MiniGrid-DoorKey-6x6-v0   --mode airs   --exp_name airs_cost0.1   --airs_cost_penalty 0.1
 ```
 
 This will train a **cost‑aware AIRS** variant that trades off reward against the compute cost of each intrinsic module.
@@ -196,4 +196,8 @@ Once the training runs are done (they write CSV logs under `results/`), you can 
 
 ```bash
 python -m scripts.plot_minigrid_results   --results_dir results   --out_path minigrid_comparison.png
+```
+To open Tensorboard, run:
+```bash
+tensorboard --logdir=runs --port=6006
 ```
