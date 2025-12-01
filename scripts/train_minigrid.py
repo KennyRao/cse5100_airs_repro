@@ -22,7 +22,7 @@ from airs.bandit import UCBIntrinsicBandit
 @dataclass
 class TrainConfig:
     env_id: str
-    mode: str  # "a2c", "a2c_re3", "airs"
+    mode: str  # "a2c", "a2c_re3", "a2c_rise", "airs"
 
     total_timesteps: int = 200_000
     num_envs: int = 16
@@ -234,6 +234,8 @@ def train(config: TrainConfig):
             intrinsic_arm = "id"
         elif config.mode == "a2c_re3":
             intrinsic_arm = "re3"
+        elif config.mode == "a2c_rise":
+            intrinsic_arm = "rise"
         elif config.mode == "airs":
             intrinsic_arm = bandit.select_arm()
             arm_counts[intrinsic_arm] += 1
@@ -479,7 +481,7 @@ def main():
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["a2c", "a2c_re3", "airs"],
+        choices=["a2c", "a2c_re3", "a2c_rise", "airs"],
         default="a2c",
         help="Which method to run",
     )

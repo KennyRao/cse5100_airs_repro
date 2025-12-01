@@ -33,6 +33,7 @@ def select_run_file(env_tag: str, mode: str, csv_root: str) -> str:
     exp_suffix_by_mode = {
         "a2c": "baseline",
         "a2c_re3": "re3",
+        "a2c_rise": "rise",
         "airs": "airs",
     }
 
@@ -131,7 +132,8 @@ def main():
     modes = {
         "a2c": "A2C",
         "a2c_re3": "A2C + RE3",
-        "airs": "A2C + AIRS",
+        "a2c_rise": "A2C + RISE",
+        "airs": "A2C + AIRS (ID, RE3, RISE)",
     }
 
     # These tags match how we built run_name: "Empty-16x16", "DoorKey-6x6"
