@@ -47,9 +47,9 @@ class TrainConfig:
     rise_alpha: float = 0.5
 
     # AIRS bandit hyperparams
-    airs_c: float = 1.0
-    airs_window: int = 10
-    airs_cost_penalty: float = 0.0
+    airs_c: float = 1.0  # UCB exploration param
+    airs_window: int = 10  # AIRS sliding window size
+    airs_cost_penalty: float = 0.0  # cost penalty λ in UCB score
 
     seed: int = 1
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
