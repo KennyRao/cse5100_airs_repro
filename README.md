@@ -233,6 +233,8 @@ After the sweep is done:
 python -m scripts.plot_minigrid_report_figures
 ```
 This writes figures under `plots/minigrid/`:
-- `minigrid_main_learning_curves.png` – main learning curves (mean ± std across seeds).
-- `Empty-16x16_airs_steps_per_sec_vs_lambda.png` – AIRS speed vs λ.
-- `DoorKey-6x6_airs_steps_per_sec_vs_lambda.png` – AIRS speed vs λ.
+- `minigrid_main_learning_curves.png` - Main learning curves (mean ± std across seeds).
+- `Empty-16x16_airs_steps_per_sec_vs_lambda.png` - AIRS training speed vs λ.
+- `DoorKey-6x6_airs_steps_per_sec_vs_lambda.png` - AIRS training speed vs λ.
+- `Empty-16x16_airs_arm_selection_vs_lambda.png` - Fraction of updates using each intrinsic arm vs. λ.
+- `DoorKey-6x6_airs_arm_selection_vs_lambda.png` - Fraction of updates using each intrinsic arm vs. λ.
