@@ -130,6 +130,69 @@ def aggregate_steps_per_sec(
     return float(arr.mean()), float(arr.std())
 
 
+def aggregate_arm_fractions(
+    results_dir: str,
+    env_tag: str,
+    exp_name: str,
+    seeds: List[int],
+    mode: str = "airs",
+    arms: List[str] = None,
+) -> Optional[Tuple[Dict[str, float], Dict[str, float]]]:
+    """
+    Aggregate arm selection fractions across seeds for a given AIRS exp_name.
+
+    Returns:
+        (mean_frac, std_frac)
+    where mean_frac[arm] and std_frac[arm] give the mean and std of the
+    fraction of updates in which that arm was chosen, across seeds.
+    """
+    if arms is None:
+        arms = ["id", "re3", "rise"]
+
+    per_seed_fractions = {arm: [] for arm in arms}
+
+    for seed in seeds:
+        df = load_run_csv(results_dir, env_tag, mode, seed, exp_name)
+        if df is None:
+            continue
+
+        if "arm" not in df.columns:
+            print(
+                f"[WARN] 'arm' column not found in CSV for "
+                f"{env_tag}, {mode}, seed={seed}, exp={exp_name}."
+            )
+            continue
+
+        # Count how many updates used each arm
+        counts = df["arm"].value_counts()
+        total = counts.sum()
+        if total == 0:
+            continue
+
+        for arm in arms:
+            frac = float(counts.get(arm, 0) / total)
+            per_seed_fractions[arm].append(frac)
+
+    # If no data at all, return None
+    if all(len(v) == 0 for v in per_seed_fractions.values()):
+        return None
+
+    mean_frac: Dict[str, float] = {}
+    std_frac: Dict[str, float] = {}
+
+    for arm in arms:
+        vals = np.array(per_seed_fractions[arm], dtype=float)
+        if len(vals) == 0:
+            # If an arm never appears for any seed, treat fraction as 0
+            mean_frac[arm] = 0.0
+            std_frac[arm] = 0.0
+        else:
+            mean_frac[arm] = float(vals.mean())
+            std_frac[arm] = float(vals.std())
+
+    return mean_frac, std_frac
+
+
 def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
@@ -275,6 +338,93 @@ def plot_steps_per_sec_vs_lambda(
         print(f"[SAVE] {out_path}")
 
 
+def plot_arm_selection_vs_lambda(
+    results_dir: str,
+    plots_dir: str,
+    env_ids: List[str],
+    seeds: List[int],
+    airs_cost_penalties: List[float],
+):
+    """
+    For each env, create a grouped bar chart:
+
+      x-axis: λ values
+      groups: each λ
+      bars within each group: fraction of updates using ID / RE3 / RISE.
+
+    Error bars: std across seeds.
+    """
+    ensure_dir(plots_dir)
+    env_tags = [env_id_to_env_tag(e) for e in env_ids]
+    arms = ["id", "re3", "rise"]
+    arm_labels = ["ID", "RE3", "RISE"]
+
+    for env_tag, env_id in zip(env_tags, env_ids):
+        # For each λ, collect mean fractions (per arm)
+        means_per_arm = {arm: [] for arm in arms}
+        stds_per_arm = {arm: [] for arm in arms}
+        lambdas_used = []
+
+        for lam in airs_cost_penalties:
+            exp_name = format_airs_exp_name(lam)
+            agg = aggregate_arm_fractions(
+                results_dir=results_dir,
+                env_tag=env_tag,
+                exp_name=exp_name,
+                seeds=seeds,
+                mode="airs",
+                arms=arms,
+            )
+            if agg is None:
+                print(
+                    f"[WARN] No arm-usage data for env={env_tag}, λ={lam:g}"
+                )
+                continue
+
+            mean_frac, std_frac = agg
+            lambdas_used.append(lam)
+            for arm in arms:
+                means_per_arm[arm].append(mean_frac[arm])
+                stds_per_arm[arm].append(std_frac[arm])
+
+        if not lambdas_used:
+            continue
+
+        lambdas_used = np.array(lambdas_used, dtype=float)
+        x = np.arange(len(lambdas_used))
+
+        width = 0.25  # bar width for each arm
+        fig, ax = plt.subplots(figsize=(6, 4))
+
+        for i, arm in enumerate(arms):
+            means = np.array(means_per_arm[arm], dtype=float)
+            stds = np.array(stds_per_arm[arm], dtype=float)
+            ax.bar(
+                x + (i - 1) * width,
+                means,
+                width,
+                yerr=stds,
+                capsize=4,
+                label=arm_labels[i],
+            )
+
+        ax.set_xticks(x)
+        ax.set_xticklabels([f"{lam:g}" for lam in lambdas_used])
+        ax.set_xlabel("λ (cost penalty)")
+        ax.set_ylabel("Fraction of updates using arm")
+        ax.set_ylim(0.0, 1.0)
+        ax.set_title(f"{env_tag} – AIRS arm selection vs λ")
+        ax.grid(True, axis="y", alpha=0.3)
+        ax.legend()
+
+        fig.tight_layout()
+        out_path = os.path.join(
+            plots_dir, f"{env_tag}_airs_arm_selection_vs_lambda.png"
+        )
+        fig.savefig(out_path, dpi=200)
+        print(f"[SAVE] {out_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
@@ -340,6 +490,14 @@ def main():
     )
 
     plot_steps_per_sec_vs_lambda(
+        results_dir=args.results_dir,
+        plots_dir=args.plots_dir,
+        env_ids=args.env_ids,
+        seeds=args.seeds,
+        airs_cost_penalties=args.airs_cost_penalties,
+    )
+
+    plot_arm_selection_vs_lambda(
         results_dir=args.results_dir,
         plots_dir=args.plots_dir,
         env_ids=args.env_ids,
