@@ -190,7 +190,7 @@ This will train a **cost‑aware AIRS** variant that trades off reward against t
 
 ---
 
-## 5. Plotting Results
+## 5. Plotting Single Results For Quick Reference
 
 Once the training runs are done (they write CSV logs under `results/`), you can plot them with:
 
@@ -201,3 +201,38 @@ To open Tensorboard, run:
 ```bash
 tensorboard --logdir=runs --port=6006
 ```
+
+## 6. Full experiment sweep and plotting
+
+To reproduce the MiniGrid results in our report (Empty-16x16 and DoorKey-6x6,
+multi-seed, with AIRS cost-aware ablations), we provide helper scripts.
+
+### 6.1 Run all experiments
+
+```bash
+python -m scripts.run_minigrid_sweep
+```
+
+This will run, for each env and each seed:
+- `a2c` (exp_name=`baseline`)
+- `a2c_re3` (exp_name=`re3`)
+- `a2c_rise` (exp_name=`rise`)
+- `airs` with `airs_cost_penalty` in `{0.0, 0.05, 0.1, 0.2}` (exp_name = `airs_cost<lambda>`)
+
+You can customize seeds, environments, and λ values, e.g.:
+```bash
+python -m scripts.run_minigrid_sweep \
+  --env_ids MiniGrid-Empty-16x16-v0 MiniGrid-DoorKey-6x6-v0 \
+  --seeds 1 2 3 \
+  --airs_cost_penalties 0.0 0.1 0.2 0.5 0.75 1.0
+```
+
+### 6.2 Generate report-ready plots
+After the sweep is done:
+```bash
+python -m scripts.plot_minigrid_report_figures
+```
+This writes figures under `plots/minigrid/`:
+- `minigrid_main_learning_curves.png` – main learning curves (mean ± std across seeds).
+- `Empty-16x16_airs_steps_per_sec_vs_lambda.png` – AIRS speed vs λ.
+- `DoorKey-6x6_airs_steps_per_sec_vs_lambda.png` – AIRS speed vs λ.
